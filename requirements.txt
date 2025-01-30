@@ -22,3 +22,4 @@ pySmartDL
 lexica-api
 google-generativeai
 pytgcalls==3.0.0.dev24
+ffmpeg
