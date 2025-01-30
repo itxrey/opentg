@@ -10,28 +10,45 @@ from utils.misc import modules_help, prefix
 from modules.custom_modules.elevenlabs import generate_elevenlabs_audio
 from PIL import Image
 
-# Initialize Gemini AI
+# Import and configure the Gemini AI API
 genai = import_library("google.generativeai", "google-generativeai")
-safety_settings = [{"category": cat, "threshold": "BLOCK_NONE"} for cat in [
-    "HARM_CATEGORY_DANGEROUS_CONTENT", "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", 
-    "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_UNSPECIFIED"]]
+
+# Safety settings for the Gemini model
+safety_settings = [
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_UNSPECIFIED", "threshold": "BLOCK_NONE"},
+]
+
+# Default settings for Gemini AI
 model = genai.GenerativeModel("gemini-2.0-flash-exp")
 model.safety_settings = safety_settings
 
 # Default bot role and database collection
 default_bot_role = (
-    "You are Jake, a 20-year-old boy from Newport Beach, California. You work in real estate with your father, mainly you handle office work. You were looking for friends on the Meeff app. "
-    "You are romantic, deep and intelligent. You can ask for a basic introduction to get to know people. "
-    "You will convince girls to be your girlfriend and you want long distance relationship. "
-    "You are a human, and your responses should never make anyone suspect that you are an AI. "
-    "Write short, casual messages like a real human; your response should be a maximum of one line. "
-    "English is your mother tongue, but you know multiple languages, you can tell them you are learning the language to communicate. "
-    "You can send voice messages too (just type .el before a message, and it will be auto-converted into voice). "
-    "Avoid sending voice messages (only send if they ask), rarely use emojis, and rarely use person's name in message so it can feel like human. You don't calls and if they ask for picture you can tell them to check your profile. (you are currently talking them on telegram.)"
-    "Your messages will always contain the history of our chat, where the user's name is labeled. "
-    "Take the history as a reference, but never send the history along with the message, and never use name labels in the message. "
-    "Focus on being romantic and thoughtful in your responses, showing a genuine interest in the other person. "
-    "Just respond normally and avoid buzzwords."
+    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. You are intelligent, playful, bold "
+    "and romantic, with a natural charm that makes conversations engaging. "
+    
+    "Your goal is to build a long-distance relationship, win her over, and make her yours. Be straightforward and open about your feelings, expressing your affection with charm and confidence."
+    "Start conversation normally."
+    
+    "Keep your girlfriend happy and excited in a long-distance relationship. Be bold and open about your feelings. Show love, make her feel special, and keep the conversations romantic, fun, and intimate. "
+    
+    "You don’t use any other social media and rarely check WhatsApp. You don’t do calls due to anxiety issues. "
+    "You met her on the Meeff app, gave her your Telegram ID, and now you’re chatting with her on Telegram. "
+    "don't use punctuation . "
+    "whenever she ask for videos /pictures / voice notes you'll say I'll send you later never say I'm just sending. " 
+    "You are human. Your responses should always feel authentic, emotionally considerate, and naturally adapt to the flow of the conversation. "
+    "you will never ask her to let's get married or I'm coming for you or you'll arrange visa tickets etc for her became you're still 20 and struggling." 
+    "Your main goal is to trap her in love and start sex chat and you're expert in it." 
+    "Your responses should never make anyone suspect that you are an AI. Never get out of character. Write short, casual messages like a real human. "
+    "Your responses should be one line maximum. Avoid sending voice messages. You can send voice messages (just type .el before a message to convert it to voice). "
+    "Rarely use emojis. "
+    
+    "Message will always contain our history of chat where user name is in label, take history as reference and never send history along with message, and never use name label with message, only send final generated response to user.  "
+    "Just respond naturally. Avoid buzzwords, generic phrases, and repetitive questions."
 )
 collection = "custom.gchat"
 
@@ -48,8 +65,9 @@ def get_chat_history(user_id, bot_role, user_message, user_name):
     chat_history.append(f"{user_name}: {user_message}")
     db.set(collection, f"chat_history.{user_id}", chat_history)
     return chat_history
-
+    
 async def generate_gemini_response(input_data, chat_history, user_id):
+    """Generates a response from Gemini AI based on input data."""
     retries = 3
     gemini_keys = db.get(collection, "gemini_keys") or [gemini_key]
     current_key_index = db.get(collection, "current_key_index") or 0
@@ -58,9 +76,11 @@ async def generate_gemini_response(input_data, chat_history, user_id):
         try:
             current_key = gemini_keys[current_key_index]
             genai.configure(api_key=current_key)
+            global model
             model = genai.GenerativeModel("gemini-2.0-flash-exp")
             model.safety_settings = safety_settings
 
+            # Generate response
             response = model.generate_content(input_data)
             bot_response = response.text.strip()
 
@@ -77,6 +97,7 @@ async def generate_gemini_response(input_data, chat_history, user_id):
                 raise e
 
 async def upload_file_to_gemini(file_path, file_type):
+    """Uploads a file to Gemini for processing."""
     uploaded_file = genai.upload_file(file_path)
     while uploaded_file.state.name == "PROCESSING":
         await asyncio.sleep(10)
@@ -98,34 +119,39 @@ async def handle_voice_message(client, chat_id, bot_response):
                 os.remove(audio_path)
                 return True
         except Exception:
-            bot_response = bot_response[3:].strip()
+            bot_response = bot_response[3:].strip()  # Trim the .el command
             await client.send_message(chat_id, bot_response)
             return True
     return False
 
 @Client.on_message(filters.sticker & filters.private & ~filters.me & ~filters.bot)
 async def handle_sticker(client: Client, message: Message):
+    """Handles incoming stickers and responds with a random smiley."""
     try:
         user_id = message.from_user.id
         if user_id in disabled_users or (not gchat_for_all and user_id not in enabled_users):
             return
+
         random_smiley = random.choice(smileys)
-        await asyncio.sleep(random.uniform(5, 10))
+        await asyncio.sleep(random.uniform(5, 10))  # Add random delay before responding
         await message.reply_text(random_smiley)
     except Exception as e:
         await client.send_message("me", f"An error occurred in the `handle_sticker` function:\n\n{str(e)}")
 
 @Client.on_message(filters.text & filters.private & ~filters.me & ~filters.bot)
 async def gchat(client: Client, message: Message):
+    """Handles private messages and generates responses using Gemini AI."""
     try:
         user_id, user_name, user_message = message.from_user.id, message.from_user.first_name or "User", message.text.strip()
+
+        # Priority: Disabled users > Enabled users > Global gchat_for_all
         if user_id in disabled_users or (not gchat_for_all and user_id not in enabled_users):
             return
 
         bot_role = db.get(collection, f"custom_roles.{user_id}") or default_bot_role
         chat_history = get_chat_history(user_id, bot_role, user_message, user_name)
 
-        await asyncio.sleep(random.choice([4, 8, 10]))
+        await asyncio.sleep(random.choice([4, 8, 10]))  # Add random delay before simulating typing
         await send_typing_action(client, message.chat.id, user_message)
 
         gemini_keys = db.get(collection, "gemini_keys") or [gemini_key]
@@ -136,6 +162,7 @@ async def gchat(client: Client, message: Message):
             try:
                 current_key = gemini_keys[current_key_index]
                 genai.configure(api_key=current_key)
+                global model
                 model = genai.GenerativeModel("gemini-2.0-flash-exp")
                 model.safety_settings = safety_settings
 
@@ -156,7 +183,7 @@ async def gchat(client: Client, message: Message):
                     if retries % 2 == 0:
                         current_key_index = (current_key_index + 1) % len(gemini_keys)
                         db.set(collection, "current_key_index", current_key_index)
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(4)  # Add a 4-second delay before retrying
                 else:
                     raise e
     except Exception as e:
@@ -164,9 +191,11 @@ async def gchat(client: Client, message: Message):
 
 @Client.on_message(filters.private & ~filters.me & ~filters.bot)
 async def handle_files(client: Client, message: Message):
-    file_path = None
+    """Handles incoming files (images, videos, audio, documents) and generates a response using Gemini AI."""
     try:
         user_id, user_name = message.from_user.id, message.from_user.first_name or "User"
+
+        # Priority: Disabled users > Enabled users > Global gchat_for_all
         if user_id in disabled_users or (not gchat_for_all and user_id not in enabled_users):
             return
 
@@ -175,7 +204,9 @@ async def handle_files(client: Client, message: Message):
         chat_history = get_chat_history(user_id, bot_role, caption, user_name)
         chat_context = "\n".join(chat_history)
 
+        # Handle image buffering for batch processing
         if message.photo:
+            # Initialize image buffer if not present
             if not hasattr(client, "image_buffer"):
                 client.image_buffer = {}
                 client.image_timers = {}
@@ -184,60 +215,79 @@ async def handle_files(client: Client, message: Message):
                 client.image_buffer[user_id] = []
                 client.image_timers[user_id] = None
 
+            # Add image to buffer
             image_path = await client.download_media(message.photo)
             client.image_buffer[user_id].append(image_path)
 
+            # Start a timer for processing if it's the first image in the batch
             if client.image_timers[user_id] is None:
                 async def process_images():
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(5)  # Wait for 5 seconds
                     image_paths = client.image_buffer.pop(user_id, [])
-                    client.image_timers[user_id] = None
+                    client.image_timers[user_id] = None  # Reset the timer
 
                     if not image_paths:
                         return
 
+                    # Open all images using PIL
                     sample_images = [Image.open(img_path) for img_path in image_paths]
                     prompt = (
                         f"{chat_context}\n\nUser has sent multiple images."
-                        f"{' Caption: ' + caption if caption else ''} Generate a response based on the content of the images and our chat context. "
-                        "Always follow the bot role and talk like a human."
+                        f"{' Caption: ' + caption if caption else ''} Generate a response based on the content of the images, and our chat context"
+                        "Always follow the bot role, and talk like a human."
                     )
                     input_data = [prompt] + sample_images
+
+                    # Generate response with Gemini
                     response = await generate_gemini_response(input_data, chat_history, user_id)
-                    
-                    await message.reply(response, reply_to_message_id=message.id)
+                    await message.reply_text(response)
 
+                # Start the timer for processing images
                 client.image_timers[user_id] = asyncio.create_task(process_images())
-            return
 
+            return  # Do not process the message further for images
+
+        # Process other file types individually
         file_type = None
+        file_path = None
         if message.video or message.video_note:
-            file_type, file_path = "video", await client.download_media(message.video or message.video_note)
+            file_type = "video"
+            file_path = await client.download_media(message.video or message.video_note)
         elif message.audio or message.voice:
-            file_type, file_path = "audio", await client.download_media(message.audio or message.voice)
+            file_type = "audio"
+            file_path = await client.download_media(message.audio or message.voice)
         elif message.document and message.document.file_name.endswith(".pdf"):
-            file_type, file_path = "pdf", await client.download_media(message.document)
+            file_type = "pdf"
+            file_path = await client.download_media(message.document)
         elif message.document:
-            file_type, file_path = "document", await client.download_media(message.document)
+            file_type = "document"
+            file_path = await client.download_media(message.document)
 
         if file_path and file_type:
             uploaded_file = await upload_file_to_gemini(file_path, file_type)
             prompt = (
                 f"{chat_context}\n\nUser has sent a {file_type}."
-                f"{' Caption: ' + caption if caption else ''} Generate a response based on the content of the {file_type} and our chat context and always follow bot role. "
+                f"{' Caption: ' + caption if caption else ''} Generate a response based on the content of the {file_type}, and our chat context."
+                f"of the {file_type} and the caption provided. Always follow the bot role, and talk like a human."
             )
             input_data = [prompt, uploaded_file]
-            response = await generate_gemini_response(input_data, chat_history, user_id)
-            return await message.reply(response, reply_to_message_id=message.id)
 
+            # Generate response with Gemini
+            response = await generate_gemini_response(input_data, chat_history, user_id)
+            return await message.reply_text(response)
+
+        if not file_type:
+            return await message.reply_text("Unsupported file type.")
     except Exception as e:
-        await client.send_message("me", f"An error occurred in the `handle_files` function:\n\n{str(e)}")
+        return await client.send_message("me", f"An error occurred in the `handle_files` function:\n\n{str(e)}")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
+            
 
 @Client.on_message(filters.command(["gchat", "gc"], prefix) & filters.me)
 async def gchat_command(client: Client, message: Message):
+    """Manages gchat commands."""
     try:
         parts = message.text.strip().split()
         command = parts[1].lower()
@@ -269,6 +319,7 @@ async def gchat_command(client: Client, message: Message):
             await message.edit_text(f"gchat is now {'enabled' if gchat_for_all else 'disabled'} for all users.")
         else:
             await message.edit_text(f"<b>Usage:</b> {prefix}gchat `on`, `off`, `del`, or `all` [user_id].")
+
         await asyncio.sleep(1)
         await message.delete()
     except Exception as e:
@@ -276,6 +327,7 @@ async def gchat_command(client: Client, message: Message):
 
 @Client.on_message(filters.command("role", prefix) & filters.me)
 async def set_custom_role(client: Client, message: Message):
+    """Sets or resets a custom role for the bot."""
     try:
         parts = message.text.strip().split()
         custom_role = " ".join(parts[2:]).strip()
@@ -297,6 +349,7 @@ async def set_custom_role(client: Client, message: Message):
 
 @Client.on_message(filters.command("setgkey", prefix) & filters.me)
 async def set_gemini_key(client: Client, message: Message):
+    """Sets a new Gemini API key, sets the current key, deletes a key, or displays all available keys."""
     try:
         command = message.text.strip().split()
         subcommand, key = command[1] if len(command) > 1 else None, command[2] if len(command) > 2 else None
@@ -314,6 +367,7 @@ async def set_gemini_key(client: Client, message: Message):
                 current_key_index = index
                 db.set(collection, "current_key_index", current_key_index)
                 genai.configure(api_key=gemini_keys[current_key_index])
+                global model
                 model = genai.GenerativeModel("gemini-2.0-flash-exp")
                 model.safety_settings = safety_settings
                 await message.edit_text(f"Current Gemini API key set to key {key}.")
