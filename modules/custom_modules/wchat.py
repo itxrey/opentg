@@ -48,6 +48,7 @@ default_bot_role = (
     "Do not include chat history or the user’s name in your messages. Only use the current message for reference, and never send past conversations." 
     "Do not send internal self-prompting or learning steps to the user. Only send the final, polished response." 
     "Respond naturally and keep it concise. Avoid buzzwords, generic phrases, and repeating questions." 
+) 
 collection = "custom.wchat"
 
 # Database initialization
