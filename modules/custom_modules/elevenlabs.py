@@ -153,7 +153,8 @@ async def set_elevenlabs_config(_, message: Message):
             f"`{prefix}set_el add_key <key>` - Add API key\n"
             f"`{prefix}set_el del_key <num>` - Delete key\n"
             f"`{prefix}set_el set_key <num>` - Set active key\n"
-            f"`{prefix}set_el <param> <value>` - Set parameter"
+            f"`{prefix}set_el voice_id <id>` - Set voice id\n"
+            f"`{prefix}set_el stability <value>` - Set stability (0.1 - 1)"
         )
         return await message.edit_text(response, parse_mode=enums.ParseMode.MARKDOWN)
 
