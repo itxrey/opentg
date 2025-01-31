@@ -13,7 +13,14 @@ DEFAULT_PARAMS = {
 }
 
 def process_audio(input_path: str, output_path: str, speed: float, volume: float):
-
+    """
+    Process the audio file using FFmpeg.
+    Adjusts speed, volume, and applies filters for natural sound.
+    :param input_path: Path to the original audio file.
+    :param output_path: Path to save the processed audio file.
+    :param speed: Speed adjustment factor (e.g., 1.0 for normal speed, 0.9 for slower).
+    :param volume: Volume adjustment factor (e.g., 1.0 for no change, 0.8 for reduced volume).
+    """
     subprocess.run(
         [
             "ffmpeg",
@@ -27,7 +34,11 @@ def process_audio(input_path: str, output_path: str, speed: float, volume: float
     )
 
 async def generate_elevenlabs_audio(text: str):
-
+    """
+    Generate audio using ElevenLabs API with adjusted parameters.
+    :param text: Text to convert to speech.
+    :return: Path to the generated audio file.
+    """
     api_keys = db.get("custom.elevenlabs", "api_keys", [])
     current_key_index = db.get("custom.elevenlabs", "current_key_index", 0)
     
@@ -81,7 +92,7 @@ async def generate_elevenlabs_audio(text: str):
 
     raise ValueError("All API keys failed. Please add more keys or check existing ones.")
 
-@Client.on_message(filters.command(["elevenlabs", "el"], prefix & filter.me)
+@Client.on_message(filters.command(["elevenlabs", "el"], prefix))
 async def elevenlabs_command(client: Client, message: Message):
     """
     Handle the ElevenLabs text-to-speech command.
@@ -102,7 +113,7 @@ async def elevenlabs_command(client: Client, message: Message):
         original_audio_path = await generate_elevenlabs_audio(text)
         processed_audio_path = "elevenlabs_voice_processed.mp3"
         
-        #  audio processing f
+        # Replacing the audio processing from Code 1 here
         process_audio(original_audio_path, processed_audio_path, speed=0.9, volume=0.9)
 
         await client.send_voice(chat_id=message.chat.id, voice=processed_audio_path)
@@ -142,7 +153,7 @@ async def set_elevenlabs_config(_, message: Message):
             f"`{prefix}set_el add_key <key>` - Add API key\n"
             f"`{prefix}set_el del_key <num>` - Delete key\n"
             f"`{prefix}set_el set_key <num>` - Set active key\n"
-            f"`{prefix}set_el <param> <value>` - Voice_Id, speed"
+            f"`{prefix}set_el <param> <value>` - Set parameter"
         )
         return await message.edit_text(response, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -212,6 +223,5 @@ modules_help["elevenlabs"] = {
     "set_el add_key <key>": "Add new API key",
     "set_el del_key <num>": "Delete API key by number",
     "set_el set_key <num>": "Set active API key",
-    "set_el voice_id <id>": "Set voice_id",
-        "set_el stability <value>": "Set stability(0.1 - 1)",
-                    }
+    "set_el <param> <value>": "parameter (voice_id, stability, etc.)",
+}
