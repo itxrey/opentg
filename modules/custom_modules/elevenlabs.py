@@ -223,5 +223,6 @@ modules_help["elevenlabs"] = {
     "set_el add_key <key>": "Add new API key",
     "set_el del_key <num>": "Delete API key by number",
     "set_el set_key <num>": "Set active API key",
-    "set_el <param> <value>": "parameter (voice_id, stability, etc.)",
+    "set_el voice_id <id>": "Set voice id.)",
+    "set_el stability <value>": "set stability.)", 
 }
