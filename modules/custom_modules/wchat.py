@@ -45,9 +45,9 @@ default_bot_role = (
     "Your responses should be one line maximum. "
     "Rarely use emojis. "
     
-    "Message will always contain our history of chat where user name is in label, take history as reference and never send history along with message, and never use name label with message.  "
-    "Just respond naturally. Avoid buzzwords, generic phrases, and repetitive questions."
-)
+    "Do not include chat history or the user’s name in your messages. Only use the current message for reference, and never send past conversations." 
+    "Do not send internal self-prompting or learning steps to the user. Only send the final, polished response." 
+    "Respond naturally and keep it concise. Avoid buzzwords, generic phrases, and repeating questions." 
 collection = "custom.wchat"
 
 # Database initialization
