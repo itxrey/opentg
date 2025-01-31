@@ -57,21 +57,6 @@ pacman)
   ;;
 esac
 
-# Clone repository if not exists
-if [[ -d "Moon-Userbot" && "$(basename "$PWD")" != "Moon-Userbot" ]]; then
-  cd Moon-Userbot || exit 2
-elif [[ "$(basename "$PWD")" == "Moon-Userbot" && -f ".env.dist" && -f "main.py" && -d "modules" ]]; then
-  printf "${BLUE}Already inside the Moon-Userbot repo, proceeding...${NC}\n" # skipcq
-else
-  git clone https://github.com/The-MoonTg-project/Moon-Userbot || exit 2
-  cd Moon-Userbot || exit 2
-fi
-
-if [[ -f ".env" ]] && [[ -f "my_account.session" ]]; then
-  printf "${GREEN}It seems that Moon-Userbot is already installed. Exiting...${NC}\n" # skipcq
-  exit
-fi
-
 # Prompt user if they want to proceed with creating a virtual environment
 printf "${YELLOW}It's recommended to use a virtual environment for Python projects.${NC}\n" # skipcq
 printf "Note: If your drive resources are very limited, you might consider not creating a virtual environment, but it shouldn't be rejected otherwise unless you know what you're doing.\n"
