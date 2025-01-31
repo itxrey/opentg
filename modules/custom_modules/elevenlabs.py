@@ -92,7 +92,7 @@ async def generate_elevenlabs_audio(text: str):
 
     raise ValueError("All API keys failed. Please add more keys or check existing ones.")
 
-@Client.on_message(filters.command(["elevenlabs", "el"], prefix))
+@Client.on_message(filters.command(["elevenlabs", "el"], prefix) & filters.me)
 async def elevenlabs_command(client: Client, message: Message):
     """
     Handle the ElevenLabs text-to-speech command.
