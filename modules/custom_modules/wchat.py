@@ -189,7 +189,7 @@ async def wchat(client: Client, message: Message):
         chat_history = get_chat_history(topic_id, bot_role, user_message, user_name)
 
         # Initial random delay before typing
-        await asyncio.sleep(random.choice([5,10]))
+        await asyncio.sleep(random.choice([4, 6]))
         await send_typing_action(client, message.chat.id, user_message)
 
         # Retrieve API keys and initialize retry mechanism
@@ -228,7 +228,6 @@ async def wchat(client: Client, message: Message):
                         "me", f"Retrying response generation for topic: {topic_id} due to long response."
                     )
 
-
                 # If all attempts fail, send a message to saved messages
                 if attempts == max_attempts:
                     await client.send_message(
@@ -236,11 +235,12 @@ async def wchat(client: Client, message: Message):
                     )
                     return  # Exit the function without sending a response
 
-                 # Only update chat history if response is within limit
-             if len(bot_response) <= max_length:
-               chat_history.append(bot_response)
-               db.set(collection, f"chat_history.{topic_id}", chat_history)
-    
+
+                    # Only update chat history if response is within limit
+                    if len(bot_response) <= max_length:
+                        chat_history.append(bot_response)
+                        db.set(collection, f"chat_history.{topic_id}", chat_history)
+
 
                 # Handle voice message if applicable
                 if ".el" in bot_response:
