@@ -128,19 +128,24 @@ async def handle_sticker(client: Client, message: Message):
 @Client.on_message(filters.text & filters.private & ~filters.me & ~filters.bot)
 async def gchat(client: Client, message: Message):
     try:
-        user_id, user_name, user_message = message.from_user.id, message.from_user.first_name or "User", message.text.strip()
+        user_id, user_name, user_message = message.from_user.id, message.from_user.first_name or "User  ", message.text.strip()
         if user_id in disabled_users or (not gchat_for_all and user_id not in enabled_users):
             return
 
         bot_role = db.get(collection, f"custom_roles.{user_id}") or default_bot_role
         chat_history = get_chat_history(user_id, bot_role, user_message, user_name)
 
+        # Initial random delay before typing
         await asyncio.sleep(random.choice([4, 8, 10]))
         await send_typing_action(client, message.chat.id, user_message)
 
         gemini_keys = db.get(collection, "gemini_keys") or [gemini_key]
         current_key_index = db.get(collection, "current_key_index") or 0
         retries = len(gemini_keys) * 2
+
+        # Set limits for response generation
+        max_attempts = 5
+        max_length = 200  # Set your desired maximum length here (in characters)
 
         while retries > 0:
             try:
@@ -150,28 +155,61 @@ async def gchat(client: Client, message: Message):
                 model.safety_settings = safety_settings
 
                 chat_context = "\n".join(chat_history)
-                response = model.start_chat().send_message(chat_context)
-                bot_response = response.text.strip()
 
-                chat_history.append(bot_response)
-                db.set(collection, f"chat_history.{user_id}", chat_history)
+                attempts = 0
+                bot_response = ""
 
+                while attempts < max_attempts:
+                    response = model.start_chat().send_message(chat_context)
+                    bot_response = response.text.strip()
+
+                    if len(bot_response) <= max_length:
+                        # Update chat history only if the response is within the limit
+                        chat_history.append(bot_response)
+                        db.set(collection, f"chat_history.{user_id}", chat_history)
+                        break  # Response is within the limit, exit the loop
+
+                    attempts += 1  # Increment attempts if the response is too long
+                    if attempts < max_attempts:
+                        # Log or notify about the retry attempt
+                        await client.send_message(
+                            "me", f"Retrying response generation for user: {user_id} due to long response."
+                        )
+
+                # If all attempts fail, log the failure
+                if attempts == max_attempts:
+                    await client.send_message(
+                        "me", f"Failed to generate a suitable response after {max_attempts} attempts for user: {user_id}"
+                    )
+                    return  # Exit the function without sending a response
+
+                # Handle voice message if applicable
                 if await handle_voice_message(client, message.chat.id, bot_response):
                     return
 
+                # Calculate delay based on response length
+                response_length = len(bot_response)
+                base_delay = 1  # Base delay in seconds
+                additional_delay_per_char = 0.05  # Additional delay per character in seconds
+                total_delay = base_delay + (response_length * additional_delay_per_char)
+
+                # Add final delay before sending the response
+                await asyncio.sleep(total_delay)
+
+                # Send the generated response back to the user
                 return await message.reply_text(bot_response)
+
             except Exception as e:
                 if "429" in str(e) or "invalid" in str(e).lower():
                     retries -= 1
                     if retries % 2 == 0:
                         current_key_index = (current_key_index + 1) % len(gemini_keys)
                         db.set(collection, "current_key_index", current_key_index)
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(4)  # Wait before retrying
                 else:
                     raise e
     except Exception as e:
         return await client.send_message("me", f"An error occurred in the `gchat` module:\n\n{str(e)}")
-
 @Client.on_message(filters.private & ~filters.me & ~filters.bot)
 async def handle_files(client: Client, message: Message):
     file_path = None
