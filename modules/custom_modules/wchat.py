@@ -169,15 +169,18 @@ async def wchat(client: Client, message: Message):
         group_id = str(message.chat.id)  # Convert group_id to string
         topic_id = f"{group_id}:{message.message_thread_id}"
         user_name, user_message = (
-            message.from_user.first_name or "User",
+            message.from_user.first_name or "User  ",
             message.text.strip(),
         )
+        
+        # Check if the topic is disabled or if the bot is restricted from responding
         if topic_id in disabled_topics or (
             not wchat_for_all_groups.get(group_id, False)
             and topic_id not in enabled_topics
         ):
             return
 
+        # Determine bot role and retrieve chat history
         bot_role = (
             db.get(collection, f"custom_roles.{topic_id}")
             or group_roles.get(group_id)
@@ -185,12 +188,22 @@ async def wchat(client: Client, message: Message):
         )
         chat_history = get_chat_history(topic_id, bot_role, user_message, user_name)
 
-        await asyncio.sleep(random.choice([4, 6]))
+        # Initial random delay before typing
+        await asyncio.sleep(random.choice([5,10]))
         await send_typing_action(client, message.chat.id, user_message)
 
+        # Retrieve API keys and initialize retry mechanism
         gemini_keys = db.get(collection, "gemini_keys")
         current_key_index = db.get(collection, "current_key_index") or 0
         retries = len(gemini_keys) * 2
+
+        # Set limits for response generation
+        max_attempts = 5
+        max_length = 200  # Set your desired maximum length here (in characters)
+
+        # Initialize response generation attempts
+        attempts = 0
+        bot_response = ""
 
         while retries > 0:
             try:
@@ -199,13 +212,37 @@ async def wchat(client: Client, message: Message):
                 model = genai.GenerativeModel("gemini-2.0-flash-exp")
                 model.safety_settings = safety_settings
 
+                # Prepare chat context
                 chat_context = "\n".join(chat_history)
-                response = model.start_chat().send_message(chat_context)
-                bot_response = response.text.strip()
 
-                chat_history.append(bot_response)
-                db.set(collection, f"chat_history.{topic_id}", chat_history)
+                while attempts < max_attempts:
+                    response = model.start_chat().send_message(chat_context)
+                    bot_response = response.text.strip()
 
+                    if len(bot_response) <= max_length:
+                        break  # Response is within the limit, exit the loop
+
+                    attempts += 1  # Increment attempts if the response is too long
+                if attempts < max_attempts:
+                    await client.send_message(
+                        "me", f"Retrying response generation for topic: {topic_id} due to long response."
+                    )
+
+
+                # If all attempts fail, send a message to saved messages
+                if attempts == max_attempts:
+                    await client.send_message(
+                        "me", f"Failed to generate a suitable response after {max_attempts} attempts for topic: {topic_id}"
+                    )
+                    return  # Exit the function without sending a response
+
+                 # Only update chat history if response is within limit
+             if len(bot_response) <= max_length:
+               chat_history.append(bot_response)
+               db.set(collection, f"chat_history.{topic_id}", chat_history)
+    
+
+                # Handle voice message if applicable
                 if ".el" in bot_response:
                     return await handle_voice_message(
                         client,
@@ -214,25 +251,36 @@ async def wchat(client: Client, message: Message):
                         thread_id=message.message_thread_id,
                     )
 
+                # Calculate delay based on response length
+                response_length = len(bot_response)
+                base_delay = 1  # Base delay in seconds
+                additional_delay_per_char = 0.05  # Additional delay per character in seconds
+                total_delay = base_delay + (response_length * additional_delay_per_char)
+
+                # Add final delay before sending the response
+                await asyncio.sleep(total_delay)
+
+                # Send the generated response back to the group
                 return await client.send_message(
                     message.chat.id,
                     bot_response,
                     message_thread_id=message.message_thread_id,
                 )
             except Exception as e:
+                # Handle specific errors related to API limits or invalid keys
                 if "429" in str(e) or "invalid" in str(e).lower():
                     retries -= 1
                     if retries % 2 == 0:
                         current_key_index = (current_key_index + 1) % len(gemini_keys)
                         db.set(collection, "current_key_index", current_key_index)
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(4)  # Wait before retrying
                 else:
                     raise e
     except Exception as e:
+        # Log the error and send a message to the bot owner
         return await client.send_message(
             "me", f"An error occurred in the `wchat` module:\n\n{str(e)}"
         )
-
 
 @Client.on_message(filters.group & ~filters.me)
 async def handle_files(client: Client, message: Message):
