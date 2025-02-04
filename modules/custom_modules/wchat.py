@@ -418,13 +418,13 @@ async def wchat_command(client: Client, message: Message):
             )
         else:
             await message.edit_text(
-                f"<b>Usage:</b> {prefix}wchat `on`, `off`, `del`, or `all`."
+                f"<b>Usage:</b> {prefix}wchat on, off, del, or all."
             )
         await asyncio.sleep(1)
         await message.delete()
     except Exception as e:
         await client.send_message(
-            "me", f"An error occurred in the `wchat` command:\n\n{str(e)}"
+            "me", f"An error occurred in the wchat command:\n\n{str(e)}"
         )
 
 
@@ -433,39 +433,58 @@ async def set_custom_role(client: Client, message: Message):
     try:
         parts = message.text.strip().split()
         if len(parts) < 2:
-            await message.edit_text(f"Usage: {prefix}role [group|topic] <custom role>")
+            await message.edit_text(
+                f"Usage: {prefix}role [group|topic] <custom role>\n"
+                f"Or for a specific topic: {prefix}role topic <thread_id> <custom role>"
+            )
             return
 
         scope = parts[1].lower()
-        custom_role = " ".join(parts[2:]).strip()
         group_id = str(message.chat.id)  # Convert group_id to string
-        topic_id = f"{group_id}:{message.message_thread_id}"
 
         if scope == "group":
+            # Everything after 'group' is treated as the custom role.
+            custom_role = " ".join(parts[2:]).strip()
             if not custom_role:
-                # Reset role to default for the group
+                # Reset role to default for the group.
                 group_roles.pop(group_id, None)
                 db.set(collection, "group_roles", group_roles)
                 await message.edit_text(f"Role reset to default for group {group_id}.")
             else:
-                # Set custom role for the group
+                # Set custom role for the group.
                 group_roles[group_id] = custom_role
                 db.set(collection, "group_roles", group_roles)
                 await message.edit_text(
                     f"Role set successfully for group {group_id}!\n<b>New Role:</b> {custom_role}"
                 )
+
         elif scope == "topic":
+            # Check if a thread ID is provided.
+            if len(parts) >= 3 and parts[2].isdigit():
+                thread_id = parts[2]
+                # The custom role is everything after the thread ID.
+                custom_role = " ".join(parts[3:]).strip()
+            else:
+                # Use the current message's thread id if available.
+                thread_id = str(message.message_thread_id or 0)
+                # The custom role is everything after 'topic'.
+                custom_role = " ".join(parts[2:]).strip()
+
+            topic_id = f"{group_id}:{thread_id}"
+
             if not custom_role:
-                # Reset role to group's custom role or default role if no group role exists
+                # Reset role to the group's role if available, or to the default.
                 group_role = group_roles.get(group_id, default_bot_role)
                 db.set(collection, f"custom_roles.{topic_id}", group_role)
+                # Clear the chat history for the topic.
                 db.set(collection, f"chat_history.{topic_id}", None)
                 await message.edit_text(
                     f"Role reset to group's role for topic {topic_id}."
                 )
             else:
-                # Set custom role for the topic
+                # Set custom role for the topic.
                 db.set(collection, f"custom_roles.{topic_id}", custom_role)
+                # Clear the chat history for the topic.
                 db.set(collection, f"chat_history.{topic_id}", None)
                 await message.edit_text(
                     f"Role set successfully for topic {topic_id}!\n<b>New Role:</b> {custom_role}"
@@ -479,6 +498,7 @@ async def set_custom_role(client: Client, message: Message):
         await client.send_message(
             "me", f"An error occurred in the `role` command:\n\n{str(e)}"
         )
+
 
 
 @Client.on_message(filters.command("setwkey", prefix) & filters.me)
