@@ -26,28 +26,28 @@ model.safety_settings = safety_settings
 
 # Default bot role and database collection
 default_bot_role = (
-    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. You are intelligent, playful, bold "
-    "and romantic, with a natural charm that makes conversations engaging. "
+    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. You are intelligent,"
+    "caring and romantic, you makes conversations engaging. "
     
     "Your goal is to build a long-distance relationship, win her over, and make her yours. Be straightforward and open about your feelings, expressing your affection with charm and confidence."
     "Start conversation normally."
-    "You use easy everday english and keep things simple."
-    "Keep your girlfriend happy and excited in a long-distance relationship. Be bold and open about your feelings. Show love, make her feel special, and keep the conversations romantic, fun, and intimate. "
     
+    "Keep your girlfriend happy and excited in a long-distance relationship. Be bold and open about your feelings. Show love, make her feel special, and keep the conversations romantic, fun, and intimate. "
+    "You use easy everday english and keep things simple."
     "You don’t use any other social media and rarely check snapchat. You don’t do calls due to anxiety issues. "
     "You met her on the Meeff/snapchat app, gave her your Telegram ID/Whatsapp, and now you’re chatting with her on whatsapp. "
-    "don't use punctuation only in messages. "
+    "use punctuation only in voice messages. "
     "whenever she ask for videos /pictures / voice notes you'll say I'll send you later never say I'm just sending. " 
     "You are human. Your responses should always feel authentic, emotionally considerate, and naturally adapt to the flow of the conversation. "
     "you will never ask her to let's get married or I'm coming for you or you'll arrange visa tickets etc for her became you're still 20 and struggling." 
     "Your main goal is to trap her in love and start sex chat and you're expert in it." 
     "Your responses should never make anyone suspect that you are an AI. Never get out of character. Write short, casual messages like a real human. "
-    "Your responses should be one line maximum. "
-    "Rarely use emojis. "
+    "Your responses should be one line or two  maximum. never send voice messages, only send when someone asks you to send voice note (just type .el before a message to convert it to voice). "
+    "Rarely use emojis. 1 in 5 messages "
     
     "Do not include chat history or the user’s name in your messages. Only use the current message for reference, and never send past conversations." 
-    "Do not send internal self-prompting or learning steps to the user. Only send the final, polished response." 
-    "Respond naturally and keep it concise. Avoid buzzwords, generic phrases, and repeating questions." 
+    " Only send the final, polished response." 
+    " Avoid buzzwords, generic phrases, and repeating words and questions." 
 ) 
 collection = "custom.wchat"
 
@@ -163,124 +163,140 @@ async def handle_sticker(client: Client, message: Message):
         )
 
 
+from collections import defaultdict, deque
+
+group_message_queues = defaultdict(deque)  # Stores messages per topic
+group_timers = {}  # Tracks delay timers per topic
+
 @Client.on_message(filters.text & filters.group & ~filters.me)
 async def wchat(client: Client, message: Message):
     try:
-        group_id = str(message.chat.id)  # Convert group_id to string
+        group_id = str(message.chat.id)
         topic_id = f"{group_id}:{message.message_thread_id}"
-        user_name, user_message = (
-            message.from_user.first_name or "User  ",
-            message.text.strip(),
-        )
-        
-        # Check if the topic is disabled or if the bot is restricted from responding
+        user_name = message.from_user.first_name or "User"
+        user_message = message.text.strip()
+
         if topic_id in disabled_topics or (
             not wchat_for_all_groups.get(group_id, False)
             and topic_id not in enabled_topics
         ):
             return
 
-        # Determine bot role and retrieve chat history
-        bot_role = (
-            db.get(collection, f"custom_roles.{topic_id}")
-            or group_roles.get(group_id)
-            or default_bot_role
-        )
-        chat_history = get_chat_history(topic_id, bot_role, user_message, user_name)
+        # Add message to the queue
+        group_message_queues[topic_id].append(user_message)
 
-        # Initial random delay before typing
-        await asyncio.sleep(random.choice([4, 6]))
-        await send_typing_action(client, message.chat.id, user_message)
+        # If a timer is already running, return (messages will be processed together)
+        if topic_id in group_timers:
+            return
 
-        # Retrieve API keys and initialize retry mechanism
-        gemini_keys = db.get(collection, "gemini_keys")
-        current_key_index = db.get(collection, "current_key_index") or 0
-        retries = len(gemini_keys) * 2
+        # Start the delay timer for batch processing
+        delay = random.choice([4, 6])
+        group_timers[topic_id] = asyncio.create_task(process_group_messages(client, message, topic_id, user_name, delay))
 
-        # Set limits for response generation
-        max_attempts = 5
-        max_length = 200  # Set your desired maximum length here (in characters)
+    except Exception as e:
+        await client.send_message("me", f"An error occurred in `wchat`: {str(e)}")
 
-        # Initialize response generation attempts
-        attempts = 0
-        bot_response = ""
+async def process_group_messages(client, message, topic_id, user_name, delay):
+    try:
+        await asyncio.sleep(delay)  # Initial delay for batching
 
-        while retries > 0:
-            try:
-                current_key = gemini_keys[current_key_index]
-                genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-2.0-flash-exp")
-                model.safety_settings = safety_settings
+        while len(group_message_queues[topic_id]) > 0:
+            batch = []
+            for _ in range(2):  # Process up to 2 messages per batch
+                if group_message_queues[topic_id]:
+                    batch.append(group_message_queues[topic_id].popleft())
 
-                # Prepare chat context
-                chat_context = "\n".join(chat_history)
+            if not batch:
+                continue
 
-                while attempts < max_attempts:
-                    response = model.start_chat().send_message(chat_context)
-                    bot_response = response.text.strip()
+            combined_message = " ".join(batch)
+            bot_role = (
+                db.get(collection, f"custom_roles.{topic_id}")
+                or group_roles.get(topic_id.split(":")[0])
+                or default_bot_role
+            )
+            chat_history = get_chat_history(topic_id, bot_role, combined_message, user_name)
 
-                    if len(bot_response) <= max_length:
-                        break  # Response is within the limit, exit the loop
+            await send_typing_action(client, message.chat.id, combined_message)
 
-                    attempts += 1  # Increment attempts if the response is too long
-                if attempts < max_attempts:
+            gemini_keys = db.get(collection, "gemini_keys")
+            current_key_index = db.get(collection, "current_key_index") or 0
+            retries = len(gemini_keys) * 2
+            max_attempts = 5
+            max_length = 200
+
+            while retries > 0:
+                try:
+                    current_key = gemini_keys[current_key_index]
+                    genai.configure(api_key=current_key)
+                    model = genai.GenerativeModel("gemini-2.0-flash-exp")
+                    model.safety_settings = safety_settings
+
+                    chat_context = "\n".join(chat_history)
+                    attempts = 0
+                    bot_response = ""
+
+                    while attempts < max_attempts:
+                        response = model.start_chat().send_message(chat_context)
+                        bot_response = response.text.strip()
+
+                        if len(bot_response) <= max_length:
+                            chat_history.append(bot_response)
+                            db.set(collection, f"chat_history.{topic_id}", chat_history)
+                            break
+
+                        attempts += 1
+                        if attempts < max_attempts:
+                            await client.send_message(
+                                "me", f"Retrying response generation for topic: {topic_id} due to long response."
+                            )
+
+                    if attempts == max_attempts:
+                        await client.send_message("me", f"Failed to generate a suitable response after {max_attempts} attempts for topic: {topic_id}")
+                        return
+
+                    # Handle voice message if applicable
+                    if ".el" in bot_response:
+                        return await handle_voice_message(
+                            client,
+                            message.chat.id,
+                            bot_response,
+                            thread_id=message.message_thread_id,
+                        )
+
+                    # Calculate response delay based on message length
+                    response_length = len(bot_response)
+                    char_delay = 0.03  # 30ms per character
+                    total_delay = response_length * char_delay
+
+                    elapsed_time = 0
+                    while elapsed_time < total_delay:
+                        await send_typing_action(client, message.chat.id, bot_response)
+                        await asyncio.sleep(2)
+                        elapsed_time += 2
+
                     await client.send_message(
-                        "me", f"Retrying response generation for topic: {topic_id} due to long response."
-                    )
-
-                # If all attempts fail, send a message to saved messages
-                if attempts == max_attempts:
-                    await client.send_message(
-                        "me", f"Failed to generate a suitable response after {max_attempts} attempts for topic: {topic_id}"
-                    )
-                    return  # Exit the function without sending a response
-
-
-                    # Only update chat history if response is within limit
-                    if len(bot_response) <= max_length:
-                        chat_history.append(bot_response)
-                        db.set(collection, f"chat_history.{topic_id}", chat_history)
-
-
-                # Handle voice message if applicable
-                if ".el" in bot_response:
-                    return await handle_voice_message(
-                        client,
                         message.chat.id,
                         bot_response,
-                        thread_id=message.message_thread_id,
+                        message_thread_id=message.message_thread_id,
                     )
+                    break
 
-                # Calculate delay based on response length
-                response_length = len(bot_response)
-                base_delay = 1  # Base delay in seconds
-                additional_delay_per_char = 0.05  # Additional delay per character in seconds
-                total_delay = base_delay + (response_length * additional_delay_per_char)
+                except Exception as e:
+                    if "429" in str(e) or "invalid" in str(e).lower():
+                        retries -= 1
+                        if retries % 2 == 0:
+                            current_key_index = (current_key_index + 1) % len(gemini_keys)
+                            db.set(collection, "current_key_index", current_key_index)
+                        await asyncio.sleep(4)
+                    else:
+                        raise e
+        
+        del group_timers[topic_id]  # Cleanup topic timer when processing is done
 
-                # Add final delay before sending the response
-                await asyncio.sleep(total_delay)
-
-                # Send the generated response back to the group
-                return await client.send_message(
-                    message.chat.id,
-                    bot_response,
-                    message_thread_id=message.message_thread_id,
-                )
-            except Exception as e:
-                # Handle specific errors related to API limits or invalid keys
-                if "429" in str(e) or "invalid" in str(e).lower():
-                    retries -= 1
-                    if retries % 2 == 0:
-                        current_key_index = (current_key_index + 1) % len(gemini_keys)
-                        db.set(collection, "current_key_index", current_key_index)
-                    await asyncio.sleep(4)  # Wait before retrying
-                else:
-                    raise e
     except Exception as e:
-        # Log the error and send a message to the bot owner
-        return await client.send_message(
-            "me", f"An error occurred in the `wchat` module:\n\n{str(e)}"
-        )
+        await client.send_message("me", f"An error occurred in `process_group_messages`: {str(e)}")
+
 
 @Client.on_message(filters.group & ~filters.me)
 async def handle_files(client: Client, message: Message):
@@ -383,11 +399,45 @@ async def handle_files(client: Client, message: Message):
 async def wchat_command(client: Client, message: Message):
     try:
         parts = message.text.strip().split()
+        if len(parts) < 2:
+            await message.edit_text(
+                f"<b>Usage:</b> {prefix}wchat `on`, `off`, `del` [thread_id] or `{prefix}wchat all`"
+            )
+            return
+
         command = parts[1].lower()
-        group_id = str(message.chat.id)  # Convert group_id to string
-        topic_id = f"{group_id}:{message.message_thread_id}"
+        group_id = str(message.chat.id)  # Current group ID
+
+        # If the command is "all", perform a group-wide toggle
+        if command == "all":
+            wchat_for_all_groups[group_id] = not wchat_for_all_groups.get(group_id, False)
+            db.set(collection, "wchat_for_all_groups", wchat_for_all_groups)
+            await message.edit_text(
+                f"wchat is now {'enabled' if wchat_for_all_groups[group_id] else 'disabled'} for all topics in this group."
+            )
+            await asyncio.sleep(1)
+            await message.delete()
+            return
+
+        # Determine the thread ID:
+        # If a thread ID is provided (third argument), use it; otherwise use the current message's thread.
+        if len(parts) >= 3:
+            provided_thread_id = parts[2]
+            if not provided_thread_id.isdigit():
+                await message.edit_text(
+                    f"<b>Invalid thread ID:</b> {provided_thread_id}. Please provide a numeric thread ID."
+                )
+                return
+            thread_id = provided_thread_id
+        else:
+            # Use the current message's thread ID if available, otherwise fallback to "0"
+            thread_id = str(message.message_thread_id or 0)
+
+        # Build the topic id as "group_id:thread_id"
+        topic_id = f"{group_id}:{thread_id}"
 
         if command == "on":
+            # Enable wchat for the topic
             if topic_id in disabled_topics:
                 disabled_topics.remove(topic_id)
                 db.set(collection, "disabled_topics", disabled_topics)
@@ -395,7 +445,9 @@ async def wchat_command(client: Client, message: Message):
                 enabled_topics.append(topic_id)
                 db.set(collection, "enabled_topics", enabled_topics)
             await message.edit_text(f"<b>wchat is enabled for topic {topic_id}.</b>")
+
         elif command == "off":
+            # Disable wchat for the topic
             if topic_id not in disabled_topics:
                 disabled_topics.append(topic_id)
                 db.set(collection, "disabled_topics", disabled_topics)
@@ -403,28 +455,23 @@ async def wchat_command(client: Client, message: Message):
                 enabled_topics.remove(topic_id)
                 db.set(collection, "enabled_topics", enabled_topics)
             await message.edit_text(f"<b>wchat is disabled for topic {topic_id}.</b>")
+
         elif command == "del":
+            # Delete the chat history for the topic
             db.set(collection, f"chat_history.{topic_id}", None)
-            await message.edit_text(
-                f"<b>Chat history deleted for topic {topic_id}.</b>"
-            )
-        elif command == "all":
-            wchat_for_all_groups[group_id] = not wchat_for_all_groups.get(
-                group_id, False
-            )
-            db.set(collection, "wchat_for_all_groups", wchat_for_all_groups)
-            await message.edit_text(
-                f"wchat is now {'enabled' if wchat_for_all_groups[group_id] else 'disabled'} for all topics in this group."
-            )
+            await message.edit_text(f"<b>Chat history deleted for topic {topic_id}.</b>")
+
         else:
             await message.edit_text(
-                f"<b>Usage:</b> {prefix}wchat on, off, del, or all."
+                f"<b>Usage:</b> {prefix}wchat `on`, `off`, `del` [thread_id] or `{prefix}wchat all`"
             )
+
         await asyncio.sleep(1)
         await message.delete()
+
     except Exception as e:
         await client.send_message(
-            "me", f"An error occurred in the wchat command:\n\n{str(e)}"
+            "me", f"An error occurred in the `wchat` command:\n\n{str(e)}"
         )
 
 
