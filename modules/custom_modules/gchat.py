@@ -9,6 +9,7 @@ from utils.db import db
 from utils.misc import modules_help, prefix
 from modules.custom_modules.elevenlabs import generate_elevenlabs_audio
 from PIL import Image
+from collections import deque
 
 # Initialize Gemini AI
 genai = import_library("google.generativeai", "google-generativeai")
@@ -20,8 +21,8 @@ model.safety_settings = safety_settings
 
 # Default bot role and database collection
 default_bot_role = (
-    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. You are intelligent, playful, bold "
-    "and romantic, with a natural charm that makes conversations engaging. "
+    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. You are intelligent,"
+    "caring and romantic, you makes conversations engaging. "
     
     "Your goal is to build a long-distance relationship, win her over, and make her yours. Be straightforward and open about your feelings, expressing your affection with charm and confidence."
     "Start conversation normally."
@@ -36,12 +37,12 @@ default_bot_role = (
     "you will never ask her to let's get married or I'm coming for you or you'll arrange visa tickets etc for her became you're still 20 and struggling." 
     "Your main goal is to trap her in love and start sex chat and you're expert in it." 
     "Your responses should never make anyone suspect that you are an AI. Never get out of character. Write short, casual messages like a real human. "
-    "Your responses should be one line maximum. don't send voice messages, only send when someone asks you to send voice note (just type .el before a message to convert it to voice). "
-    "Rarely use emojis. "
+    "Your responses should be one line or two  maximum. never send voice messages, only send when someone asks you to send voice note (just type .el before a message to convert it to voice). "
+    "Rarely use emojis. 1 in 5 messages "
     
     "Do not include chat history or the user’s name in your messages. Only use the current message for reference, and never send past conversations." 
-    "Do not send internal self-prompting or learning steps to the user. Only send the final, polished response." 
-    "Respond naturally and keep it concise. Avoid buzzwords, generic phrases, and repeating questions." 
+    " Only send the final, polished response." 
+    " Avoid buzzwords, generic phrases, and repeating words and questions." 
 ) 
 collection = "custom.gchat"
 
@@ -125,91 +126,124 @@ async def handle_sticker(client: Client, message: Message):
     except Exception as e:
         await client.send_message("me", f"An error occurred in the `handle_sticker` function:\n\n{str(e)}")
 
+from collections import defaultdict, deque
+import asyncio
+import random
+
+user_message_queues = defaultdict(deque)  # Stores messages per user
+user_timers = {}  # Tracks active processing tasks per user
+
 @Client.on_message(filters.text & filters.private & ~filters.me & ~filters.bot)
 async def gchat(client: Client, message: Message):
     try:
-        user_id, user_name, user_message = message.from_user.id, message.from_user.first_name or "User  ", message.text.strip()
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name or "User"
+        user_message = message.text.strip()
+
         if user_id in disabled_users or (not gchat_for_all and user_id not in enabled_users):
             return
 
-        bot_role = db.get(collection, f"custom_roles.{user_id}") or default_bot_role
-        chat_history = get_chat_history(user_id, bot_role, user_message, user_name)
+        # Add message to queue
+        user_message_queues[user_id].append(user_message)
 
-        # Initial random delay before typing
-        await asyncio.sleep(random.choice([4, 8, 10]))
-        await send_typing_action(client, message.chat.id, user_message)
-
-        gemini_keys = db.get(collection, "gemini_keys") or [gemini_key]
-        current_key_index = db.get(collection, "current_key_index") or 0
-        retries = len(gemini_keys) * 2
-
-        # Set limits for response generation
-        max_attempts = 5
-        max_length = 200  # Set your desired maximum length here (in characters)
-
-        while retries > 0:
-            try:
-                current_key = gemini_keys[current_key_index]
-                genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-2.0-flash-exp")
-                model.safety_settings = safety_settings
-
-                chat_context = "\n".join(chat_history)
-
-                attempts = 0
-                bot_response = ""
-
-                while attempts < max_attempts:
-                    response = model.start_chat().send_message(chat_context)
-                    bot_response = response.text.strip()
-
-                    if len(bot_response) <= max_length:
-                        # Update chat history only if the response is within the limit
-                        chat_history.append(bot_response)
-                        db.set(collection, f"chat_history.{user_id}", chat_history)
-                        break  # Response is within the limit, exit the loop
-
-                    attempts += 1  # Increment attempts if the response is too long
-                    if attempts < max_attempts:
-                        # Log or notify about the retry attempt
-                        await client.send_message(
-                            "me", f"Retrying response generation for user: {user_id} due to long response."
-                        )
-
-                # If all attempts fail, log the failure
-                if attempts == max_attempts:
-                    await client.send_message(
-                        "me", f"Failed to generate a suitable response after {max_attempts} attempts for user: {user_id}"
-                    )
-                    return  # Exit the function without sending a response
-
-                # Handle voice message if applicable
-                if await handle_voice_message(client, message.chat.id, bot_response):
-                    return
-
-                # Calculate delay based on response length
-                response_length = len(bot_response)
-                base_delay = 1  # Base delay in seconds
-                additional_delay_per_char = 0.05  # Additional delay per character in seconds
-                total_delay = base_delay + (response_length * additional_delay_per_char)
-
-                # Add final delay before sending the response
-                await asyncio.sleep(total_delay)
-
-                # Send the generated response back to the user
-                return await message.reply_text(bot_response)
-
-            except Exception as e:
-                if "429" in str(e) or "invalid" in str(e).lower():
-                    retries -= 1
-                    if retries % 2 == 0:
-                        current_key_index = (current_key_index + 1) % len(gemini_keys)
-                        db.set(collection, "current_key_index", current_key_index)
-                    await asyncio.sleep(4)  # Wait before retrying
-                else:
-                    raise e
+        # If no active processing task, start one
+        if user_id not in user_timers:
+            delay = random.choice([4, 8, 10])  # Random delay before first batch
+            user_timers[user_id] = asyncio.create_task(process_messages(client, message.chat.id, user_id, user_name, delay))
+    
     except Exception as e:
-        return await client.send_message("me", f"An error occurred in the `gchat` module:\n\n{str(e)}")
+        await client.send_message("me", f"Error in `gchat`: {str(e)}")
+
+
+async def process_messages(client, chat_id, user_id, user_name, delay):
+    try:
+        await asyncio.sleep(delay)  # Initial delay before processing batch
+
+        while user_message_queues[user_id]:  # Keep processing while messages exist
+            batch = []
+            for _ in range(2):  # Process up to 2 messages per batch
+                if user_message_queues[user_id]:
+                    batch.append(user_message_queues[user_id].popleft())
+
+            if not batch:
+                continue
+
+            combined_message = " ".join(batch)
+            bot_role = db.get(collection, f"custom_roles.{user_id}") or default_bot_role
+            chat_history = get_chat_history(user_id, bot_role, combined_message, user_name)
+
+            await send_typing_action(client, chat_id, combined_message)
+            
+            gemini_keys = db.get(collection, "gemini_keys") or [gemini_key]
+            current_key_index = db.get(collection, "current_key_index") or 0
+            retries = len(gemini_keys) * 2
+            max_attempts = 5
+            max_length = 200  # Max response length
+
+            while retries > 0:
+                try:
+                    current_key = gemini_keys[current_key_index]
+                    genai.configure(api_key=current_key)
+                    model = genai.GenerativeModel("gemini-2.0-flash-exp")
+                    model.safety_settings = safety_settings
+
+                    chat_context = "\n".join(chat_history)
+                    attempts = 0
+                    bot_response = ""
+
+                    while attempts < max_attempts:
+                        response = model.start_chat().send_message(chat_context)
+                        bot_response = response.text.strip()
+
+                        if len(bot_response) <= max_length:
+                            chat_history.append(bot_response)
+                            db.set(collection, f"chat_history.{user_id}", chat_history)
+                            break  # Exit attempt loop
+
+                        attempts += 1  # Retry with a shorter response
+                        if attempts < max_attempts:
+                            await client.send_message("me", f"Retrying for user: {user_id} (Response too long)")
+
+                    if attempts == max_attempts:
+                        await client.send_message("me", f"Failed to generate response for user: {user_id}")
+                        return  
+
+                    # Handle voice messages
+                    if await handle_voice_message(client, chat_id, bot_response):
+                        return
+
+                    # Simulate typing before sending response
+                    response_length = len(bot_response)
+                    char_delay = 0.03  # 30ms per character
+                    total_delay = response_length * char_delay
+
+                    elapsed_time = 0
+                    while elapsed_time < total_delay:
+                        await send_typing_action(client, chat_id, bot_response)
+                        await asyncio.sleep(2)
+                        elapsed_time += 2
+
+                    await client.send_message(chat_id, bot_response)
+                    break  # Exit retry loop
+                
+                except Exception as e:
+                    if "429" in str(e) or "invalid" in str(e).lower():
+                        retries -= 1
+                        if retries % 2 == 0:
+                            current_key_index = (current_key_index + 1) % len(gemini_keys)
+                            db.set(collection, "current_key_index", current_key_index)
+                        await asyncio.sleep(4)
+                    else:
+                        raise e
+
+    except Exception as e:
+        await client.send_message("me", f"Error in `process_messages`: {str(e)}")
+    
+    finally:
+        # Always clean up the task when done
+        user_timers.pop(user_id, None)
+
+
 @Client.on_message(filters.private & ~filters.me & ~filters.bot)
 async def handle_files(client: Client, message: Message):
     file_path = None
