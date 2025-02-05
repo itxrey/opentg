@@ -163,6 +163,12 @@ async def handle_sticker(client: Client, message: Message):
         )
 
 
+def get_topic_id(group_id, thread_id):
+    # If thread_id is None or falsy, default to "0"
+    thread_id_str = str(thread_id) if thread_id else "0"
+    return f"{group_id}:{thread_id_str}"
+
+
 from collections import defaultdict, deque
 
 group_message_queues = defaultdict(deque)  # Stores messages per topic
@@ -172,26 +178,28 @@ group_timers = {}  # Tracks delay timers per topic
 async def wchat(client: Client, message: Message):
     try:
         group_id = str(message.chat.id)
-        topic_id = f"{group_id}:{message.message_thread_id}"
+        # Use our helper to compute topic_id
+        topic_id = get_topic_id(group_id, message.message_thread_id)
         user_name = message.from_user.first_name or "User"
         user_message = message.text.strip()
 
         if topic_id in disabled_topics or (
-            not wchat_for_all_groups.get(group_id, False)
-            and topic_id not in enabled_topics
+            not wchat_for_all_groups.get(group_id, False) and topic_id not in enabled_topics
         ):
             return
 
         # Add message to the queue
         group_message_queues[topic_id].append(user_message)
 
-        # If a timer is already running, return (messages will be processed together)
+        # If a timer is already running for this topic, return
         if topic_id in group_timers:
             return
 
         # Start the delay timer for batch processing
         delay = random.choice([4, 6])
-        group_timers[topic_id] = asyncio.create_task(process_group_messages(client, message, topic_id, user_name, delay))
+        group_timers[topic_id] = asyncio.create_task(
+            process_group_messages(client, message, topic_id, user_name, delay)
+        )
 
     except Exception as e:
         await client.send_message("me", f"An error occurred in `wchat`: {str(e)}")
@@ -210,11 +218,12 @@ async def process_group_messages(client, message, topic_id, user_name, delay):
                 continue
 
             combined_message = " ".join(batch)
-            bot_role = (
-                db.get(collection, f"custom_roles.{topic_id}")
-                or group_roles.get(topic_id.split(":")[0])
-                or default_bot_role
-            )
+bot_role = (
+    db.get(collection, f"custom_roles.{topic_id}")
+    or group_roles.get(group_id)
+    or default_bot_role
+)
+
             chat_history = get_chat_history(topic_id, bot_role, combined_message, user_name)
 
             await send_typing_action(client, message.chat.id, combined_message)
@@ -505,37 +514,31 @@ async def set_custom_role(client: Client, message: Message):
                     f"Role set successfully for group {group_id}!\n<b>New Role:</b> {custom_role}"
                 )
 
-        elif scope == "topic":
-            # Check if a thread ID is provided.
-            if len(parts) >= 3 and parts[2].isdigit():
-                thread_id = parts[2]
-                # The custom role is everything after the thread ID.
-                custom_role = " ".join(parts[3:]).strip()
-            else:
-                # Use the current message's thread id if available.
-                thread_id = str(message.message_thread_id or 0)
-                # The custom role is everything after 'topic'.
-                custom_role = " ".join(parts[2:]).strip()
+elif scope == "topic":
+    if len(parts) >= 3 and parts[2].isdigit():
+        thread_id = parts[2]
+        custom_role = " ".join(parts[3:]).strip()
+    else:
+        thread_id = message.message_thread_id or "0"
+        custom_role = " ".join(parts[2:]).strip()
 
-            topic_id = f"{group_id}:{thread_id}"
+    topic_id = get_topic_id(group_id, thread_id)
 
-            if not custom_role:
-                # Reset role to the group's role if available, or to the default.
-                group_role = group_roles.get(group_id, default_bot_role)
-                db.set(collection, f"custom_roles.{topic_id}", group_role)
-                # Clear the chat history for the topic.
-                db.set(collection, f"chat_history.{topic_id}", None)
-                await message.edit_text(
-                    f"Role reset to group's role for topic {topic_id}."
-                )
-            else:
-                # Set custom role for the topic.
-                db.set(collection, f"custom_roles.{topic_id}", custom_role)
-                # Clear the chat history for the topic.
-                db.set(collection, f"chat_history.{topic_id}", None)
-                await message.edit_text(
-                    f"Role set successfully for topic {topic_id}!\n<b>New Role:</b> {custom_role}"
-                )
+    if not custom_role:
+        # Reset role to the group's role if available, or to the default.
+        group_role = group_roles.get(group_id, default_bot_role)
+        db.set(collection, f"custom_roles.{topic_id}", group_role)
+        # Clear the chat history for the topic.
+        db.set(collection, f"chat_history.{topic_id}", None)
+        await message.edit_text(f"Role reset to group's role for topic {topic_id}.")
+    else:
+        # Set custom role for the topic.
+        db.set(collection, f"custom_roles.{topic_id}", custom_role)
+        # Clear the chat history for the topic.
+        db.set(collection, f"chat_history.{topic_id}", None)
+        await message.edit_text(
+            f"Role set successfully for topic {topic_id}!\n<b>New Role:</b> {custom_role}"
+        )
         else:
             await message.edit_text(f"Invalid scope. Use 'group' or 'topic'.")
 
