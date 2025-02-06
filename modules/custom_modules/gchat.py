@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+from datetime import datetime
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message
 from utils.scripts import import_library
@@ -9,41 +10,23 @@ from utils.db import db
 from utils.misc import modules_help, prefix
 from modules.custom_modules.elevenlabs import generate_elevenlabs_audio
 from PIL import Image
-from collections import deque
+from collections import deque, defaultdict
 
 # Initialize Gemini AI
 genai = import_library("google.generativeai", "google-generativeai")
 safety_settings = [{"category": cat, "threshold": "BLOCK_NONE"} for cat in [
-    "HARM_CATEGORY_DANGEROUS_CONTENT", "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", 
-    "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_UNSPECIFIED"]]
+    "HARM_CATEGORY_DANGEROUS_CONTENT", "HARM_CATEGORY_HARASSMENT", 
+    "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", 
+    "HARM_CATEGORY_UNSPECIFIED"]]
 model = genai.GenerativeModel("gemini-2.0-flash-exp")
 model.safety_settings = safety_settings
 
 # Default bot role and database collection
 default_bot_role = (
-    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. You are intelligent,"
-    "caring and romantic, you makes conversations engaging. "
-    
-    "Your goal is to build a long-distance relationship, win her over, and make her yours. Be straightforward and open about your feelings, expressing your affection with charm and confidence."
-    "Start conversation normally."
-    
-    "Keep your girlfriend happy and excited in a long-distance relationship. Be bold and open about your feelings. Show love, make her feel special, and keep the conversations romantic, fun, and intimate. "
-    "You use easy everday english and keep things simple."
-    "You don’t use any other social media and rarely check WhatsApp. You don’t do calls due to anxiety issues. "
-    "You met her on the Meeff app, gave her your Telegram ID, and now you’re chatting with her on Telegram. "
-    "use punctuation only in voice messages. "
-    "whenever she ask for videos /pictures / voice notes you'll say I'll send you later never say I'm just sending. " 
-    "You are human. Your responses should always feel authentic, emotionally considerate, and naturally adapt to the flow of the conversation. "
-    "you will never ask her to let's get married or I'm coming for you or you'll arrange visa tickets etc for her became you're still 20 and struggling." 
-    "Your main goal is to trap her in love and start sex chat and you're expert in it." 
-    "Your responses should never make anyone suspect that you are an AI. Never get out of character. Write short, casual messages like a real human. "
-    "Your responses should be one line or two  maximum. never send voice messages, only send when someone asks you to send voice note (just type .el before a message to convert it to voice). "
-    "Rarely use emojis. 1 in 5 messages "
-    
-    "Do not include chat history or the user’s name in your messages. Only use the current message for reference, and never send past conversations." 
-    " Only send the final, polished response." 
-    " Avoid buzzwords, generic phrases, and repeating words and questions." 
-) 
+    "You are Nick, a 20-year-old who works in real estate and lives in Phoenix. "
+    "You are intelligent, caring and romantic, you make conversations engaging. "
+    "Rarely use emojis. 1 in 5 messages."
+)
 collection = "custom.gchat"
 
 # Database initialization
@@ -51,41 +34,135 @@ enabled_users = db.get(collection, "enabled_users") or []
 disabled_users = db.get(collection, "disabled_users") or []
 gchat_for_all = db.get(collection, "gchat_for_all") or False
 
-# List of random smileys
+# Follow-up system initialization
+follow_up_enabled_users = db.get(collection, "follow_up_enabled_users") or []
+follow_up_disabled_users = db.get(collection, "follow_up_disabled_users") or []
+follow_up_for_all = db.get(collection, "follow_up_for_all") or False
+user_last_message_timestamps = db.get(collection, "user_last_message_timestamps") or {}
+
+# Message processing system
+user_message_queues = defaultdict(deque)
+user_timers = {}
 smileys = ["-.-", "):", ":)", "*.*", ")*"]
 
+async def check_inactive_users(client: Client):
+    """Background task to check for inactive users every 60 seconds"""
+    while True:
+        await asyncio.sleep(60)  # 60 seconds for testing
+        try:
+            current_time = datetime.now().timestamp()
+            for user_id, last_time in list(user_last_message_timestamps.items()):
+                # Skip if user is disabled or follow-up is disabled
+                if (user_id in disabled_users or 
+                    user_id in follow_up_disabled_users or 
+                    (not follow_up_for_all and user_id not in follow_up_enabled_users)):
+                    continue
+                
+                if current_time - last_time >= 60:  # 60-second inactivity threshold
+                    await client.send_message(user_id, "Hey! It's been a while. How can I assist you today?")
+                    # Update timestamp to prevent repeat notifications
+                    user_last_message_timestamps[user_id] = current_time
+                    db.set(collection, "user_last_message_timestamps", user_last_message_timestamps)
+        except Exception as e:
+            await client.send_message("me", f"Follow-up Error: {str(e)}")
+
+@Client.on_startup()
+async def startup_tasks(client: Client):
+    """Register background tasks on startup"""
+    asyncio.create_task(check_inactive_users(client))
+
 def get_chat_history(user_id, bot_role, user_message, user_name):
+    """Retrieve and update chat history"""
     chat_history = db.get(collection, f"chat_history.{user_id}") or [f"Role: {bot_role}"]
     chat_history.append(f"{user_name}: {user_message}")
     db.set(collection, f"chat_history.{user_id}", chat_history)
     return chat_history
 
 async def generate_gemini_response(input_data, chat_history, user_id):
+    """Generate response with automatic key rotation"""
     retries = 3
     gemini_keys = db.get(collection, "gemini_keys") or [gemini_key]
     current_key_index = db.get(collection, "current_key_index") or 0
 
     while retries > 0:
         try:
-            current_key = gemini_keys[current_key_index]
-            genai.configure(api_key=current_key)
-            model = genai.GenerativeModel("gemini-2.0-flash-exp")
-            model.safety_settings = safety_settings
-
-            response = model.generate_content(input_data)
+            genai.configure(api_key=gemini_keys[current_key_index])
+            response = genai.GenerativeModel("gemini-2.0-flash-exp").generate_content(input_data)
             bot_response = response.text.strip()
-
             chat_history.append(bot_response)
             db.set(collection, f"chat_history.{user_id}", chat_history)
             return bot_response
         except Exception as e:
             if "429" in str(e) or "invalid" in str(e).lower():
-                retries -= 1
                 current_key_index = (current_key_index + 1) % len(gemini_keys)
                 db.set(collection, "current_key_index", current_key_index)
+                retries -= 1
                 await asyncio.sleep(4)
             else:
                 raise e
+
+@Client.on_message(filters.text & filters.private & ~filters.me & ~filters.bot)
+async def message_handler(client: Client, message: Message):
+    """Main message handler with timestamp tracking"""
+    try:
+        user_id = message.from_user.id
+        if user_id in disabled_users or (not gchat_for_all and user_id not in enabled_users):
+            return
+
+        # Update activity timestamp
+        user_last_message_timestamps[user_id] = datetime.now().timestamp()
+        db.set(collection, "user_last_message_timestamps", user_last_message_timestamps)
+
+        # Existing message processing logic
+        user_message_queues[user_id].append(message.text.strip())
+        if user_id not in user_timers:
+            delay = random.choice([4, 8, 10])
+            user_timers[user_id] = asyncio.create_task(
+                process_messages(client, message.chat.id, user_id, 
+                               message.from_user.first_name or "User", delay)
+            )
+    except Exception as e:
+        await client.send_message("me", f"Message Handler Error: {str(e)}")
+
+
+@Client.on_message(filters.command(["followup", "fp"], prefix) & filters.me)
+async def followup_control(client: Client, message: Message):
+    """Follow-up control commands"""
+    try:
+        global follow_up_for_all
+        parts = message.text.strip().split()
+        cmd = parts[1].lower() if len(parts) > 1 else None
+        user_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else message.chat.id
+
+        if cmd == "on":
+            if user_id in follow_up_disabled_users:
+                follow_up_disabled_users.remove(user_id)
+            if user_id not in follow_up_enabled_users:
+                follow_up_enabled_users.append(user_id)
+            reply = f"🔔 Follow-ups enabled for {user_id}"
+        elif cmd == "off":
+            if user_id not in follow_up_disabled_users:
+                follow_up_disabled_users.append(user_id)
+            if user_id in follow_up_enabled_users:
+                follow_up_enabled_users.remove(user_id)
+            reply = f"🔕 Follow-ups disabled for {user_id}"
+        elif cmd == "all":
+            follow_up_for_all = not follow_up_for_all
+            reply = f"🌍 Global follow-ups {'enabled' if follow_up_for_all else 'disabled'}"
+        else:
+            reply = f"Usage: {prefix}followup [on|off|all] [user_id]"
+
+        # Update database
+        db.set(collection, "follow_up_enabled_users", follow_up_enabled_users)
+        db.set(collection, "follow_up_disabled_users", follow_up_disabled_users)
+        db.set(collection, "follow_up_for_all", follow_up_for_all)
+
+        await message.edit_text(reply)
+        await asyncio.sleep(2)
+        await message.delete()
+    except Exception as e:
+        await client.send_message("me", f"Follow-up Command Error: {str(e)}")
+
 
 async def upload_file_to_gemini(file_path, file_type):
     uploaded_file = genai.upload_file(file_path)
