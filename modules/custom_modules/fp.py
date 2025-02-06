@@ -12,7 +12,7 @@ MODULE = "core.followup"
 DEFAULT_MESSAGE = "Hi! You haven't sent a message in a while. Hope you're doing well!"
 
 # Inactivity interval (seconds); set to 86400 for 24 hours; for testing, you might use 60
-FOLLOWUP_INTERVAL = 86400  # Change to 60 for testing
+FOLLOWUP_INTERVAL = 60  # Change to 60 for testing
 
 # ---------------------------
 # Database utility functions
@@ -99,11 +99,11 @@ async def followup_checker(client: Client):
                     except Exception as e:
                         # Send error message to saved messages ("me")
                         await client.send_message("me", f"Error sending follow-up to {user_id}: {e}")
-            await asyncio.sleep(3600)  # Check every hour
+            await asyncio.sleep(60)  # Check every hour
         except Exception as ex:
             # In case of an exception, send an error message to "me" and continue.
             await client.send_message("me", f"Error in followup_checker: {ex}")
-            await asyncio.sleep(3600)
+            await asyncio.sleep(60)
 
 # ---------------------------
 # Command handlers for follow-up control.
