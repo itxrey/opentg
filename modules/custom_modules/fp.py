@@ -1,214 +1,83 @@
 import asyncio
-import time
-import random
-from pyrogram import Client, filters, enums
+from datetime import datetime, timedelta
+from pyrogram import Client, filters
 from pyrogram.types import Message
-from utils.db import db  # your existing DB module
+from utils.db import db
 
-# Namespace for DB keys used by this module
-MODULE = "core.followup"
+# Constants
+FOLLOW_UP_TIMEOUT = timedelta(seconds=60)  # Change to 60 seconds for testing
 
-# Default follow-up message if none is set
-DEFAULT_MESSAGE = "Hi! You haven't sent a message in a while. Hope you're doing well!"
+async def send_follow_up_message(client: Client, user_id: int, custom_message: str = None):
+    """Send a follow-up message to the user."""
+    message = custom_message or "Hey, it's been a while since we last chatted! How can I assist you today?"
+    await client.send_message(user_id, message)
 
-# Inactivity interval (seconds); set to 86400 for 24 hours; for testing, you might use 60
-FOLLOWUP_INTERVAL = 60  # Change to 60 for testing
-
-# ---------------------------
-# Database utility functions
-
-def get_enabled_users() -> list:
-    return db.get(MODULE, "enabled_users", default=[])
-
-def set_enabled_users(users: list):
-    db.set(MODULE, "enabled_users", users)
-
-def get_disabled_users() -> list:
-    return db.get(MODULE, "disabled_users", default=[])
-
-def set_disabled_users(users: list):
-    db.set(MODULE, "disabled_users", users)
-
-def get_global_followup() -> bool:
-    return db.get(MODULE, "followup_all", default=False)
-
-def set_global_followup(state: bool):
-    db.set(MODULE, "followup_all", state)
-
-def update_last_message(user_id: int):
-    key = f"last_message.{user_id}"
-    db.set(MODULE, key, int(time.time()))
-
-def get_last_message(user_id: int) -> int:
-    key = f"last_message.{user_id}"
-    return db.get(MODULE, key, default=0)
-
-def set_custom_followup_message(user_id: int, message: str):
-    db.set(MODULE, f"followup_msg.{user_id}", message)
-
-def get_custom_followup_message(user_id: int) -> str:
-    return db.get(MODULE, f"followup_msg.{user_id}", default=DEFAULT_MESSAGE)
-
-# ---------------------------
-# Message tracking: update timestamp on every incoming private text message.
-@Client.on_message(filters.text & filters.private & ~filters.me & ~filters.bot)
-async def track_user_activity(client: Client, message: Message):
-    user_id = message.from_user.id
-    update_last_message(user_id)
-    # If global follow-up is active and the user is not manually disabled, add the user to enabled list.
-    if get_global_followup():
-        disabled = get_disabled_users()
-        if user_id not in disabled:
-            enabled = get_enabled_users()
-            if user_id not in enabled:
-                enabled.append(user_id)
-                set_enabled_users(enabled)
-
-# ---------------------------
-# Background task: check inactive users and send follow-up messages.
-async def followup_checker(client: Client):
+async def check_inactive_users():
+    """Check for inactive users and send follow-up messages if needed."""
     while True:
-        try:
-            current_time = int(time.time())
-            # Get all keys for this module to find candidate users (keys starting with "last_message.")
-            collection = db.get_collection(MODULE)  # returns a dict of all keys under MODULE
-            candidate_users = []
-            for key in collection.keys():
-                if key.startswith("last_message."):
-                    try:
-                        candidate_users.append(int(key.split(".")[1]))
-                    except Exception:
-                        continue
+        await asyncio.sleep(60)  # Check every 60 seconds for testing
+        current_time = datetime.now()
+        users = db.get_collection("core.follow_up")  # Get all users from the database
 
-            enabled_users = set(get_enabled_users())
-            global_on = get_global_followup()
-            disabled_users = set(get_disabled_users())
+        for user_id, last_message_time in users.items():
+            last_message_time = datetime.fromisoformat(last_message_time)
+            if current_time - last_message_time > FOLLOW_UP_TIMEOUT:
+                disabled_users = db.get("core.follow_up", "disabled_users", default=[])
+                if user_id not in disabled_users:
+                    await send_follow_up_message(client, user_id)
+                    db.remove("core.follow_up", f"user_{user_id}")  # Remove user after follow-up
 
-            # Candidates: explicitly enabled users plus (if global follow-up is on) all users not disabled.
-            recipients = set(enabled_users)
-            if global_on:
-                recipients |= (set(candidate_users) - disabled_users)
+@Client.on_message(filters.private)
+async def handle_new_message(client: Client, message: Message):
+    """Handle new messages and update the user's last message timestamp."""
+    user_id = message.from_user.id
+    db.set("core.follow_up", f"user_{user_id}", datetime.now().isoformat())  # Store timestamp
 
-            for user_id in recipients:
-                last_time = get_last_message(user_id)
-                if current_time - last_time >= FOLLOWUP_INTERVAL:
-                    followup_msg = get_custom_followup_message(user_id)
-                    try:
-                        await client.send_message(user_id, followup_msg)
-                        update_last_message(user_id)
-                    except Exception as e:
-                        # Send error message to saved messages ("me")
-                        await client.send_message("me", f"Error sending follow-up to {user_id}: {e}")
-            await asyncio.sleep(60)  # Check every hour
-        except Exception as ex:
-            # In case of an exception, send an error message to "me" and continue.
-            await client.send_message("me", f"Error in followup_checker: {ex}")
-            await asyncio.sleep(60)
+@Client.on_message(filters.command("fp") & filters.private)
+async def follow_up_command(client: Client, message: Message):
+    """Handle follow-up commands for users."""
+    command = message.command[1] if len(message.command) > 1 else None
+    user_id = message.from_user.id
 
-# ---------------------------
-# Command handlers for follow-up control.
-@Client.on_message(filters.command(["fp", ".fp"], prefixes=[".", "/"]) & filters.me)
-async def manage_followup(client: Client, message: Message):
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("Usage: .fp help")
-    cmd = args[1].lower()
+    if command == "on":
+        custom_message = message.command[2] if len(message.command) > 2 else None
+        db.set("core.follow_up", f"user_{user_id}", datetime.now().isoformat())
+        await send_follow_up_message(client, user_id, custom_message)
+        await message.reply("Follow-up messages are now enabled for you.")
 
-    if cmd == "help":
-        help_text = (
-            "**Follow-Up Module Help**\n\n"
-            ".fp on <user_id> [<custom message>] - Enable follow-up for a user (with optional custom message).\n"
-            ".fp off <user_id> - Disable follow-up for a user (won't be re-enabled by global settings).\n"
-            ".fp all - Toggle global follow-up for all users (except manually disabled ones).\n"
-            ".fp status [<user_id>] - Show follow-up status; if user_id provided, show that user's last message time and custom message.\n"
-            ".fp help - Show this help message."
-        )
-        return await message.reply_text(help_text)
+    elif command == "off":
+        db.remove("core.follow_up", f"user_{user_id}")
+        await message.reply("Follow-up messages are now disabled for you.")
 
-    elif cmd == "on":
-        if len(args) < 3:
-            return await message.reply_text("Usage: .fp on <user_id> [<custom message>]")
-        try:
-            user_id = int(args[2])
-        except ValueError:
-            return await message.reply_text("Invalid user ID.")
-        custom_msg = " ".join(args[3:]) if len(args) > 3 else DEFAULT_MESSAGE
-        enabled = get_enabled_users()
-        if user_id not in enabled:
-            enabled.append(user_id)
-            set_enabled_users(enabled)
-        set_custom_followup_message(user_id, custom_msg)
-        # Remove from disabled list if present.
-        disabled = get_disabled_users()
-        if user_id in disabled:
-            disabled.remove(user_id)
-            set_disabled_users(list(disabled))
-        return await message.reply_text(f"Follow-up enabled for user {user_id} with message: {custom_msg}")
+    elif command == "all":
+        global follow_up_enabled
+        follow_up_enabled = not follow_up_enabled
+        status = "enabled" if follow_up_enabled else "disabled"
+        await message.reply(f"Global follow-up messages are now {status}.")
 
-    elif cmd == "off":
-        if len(args) < 3:
-            return await message.reply_text("Usage: .fp off <user_id>")
-        try:
-            user_id = int(args[2])
-        except ValueError:
-            return await message.reply_text("Invalid user ID.")
-        enabled = get_enabled_users()
-        if user_id in enabled:
-            enabled.remove(user_id)
-            set_enabled_users(enabled)
-        disabled = get_disabled_users()
-        if user_id not in disabled:
-            disabled.append(user_id)
-            set_disabled_users(disabled)
-        return await message.reply_text(f"Follow-up disabled for user {user_id}")
-
-    elif cmd == "all":
-        state = not get_global_followup()
-        set_global_followup(state)
-        state_text = "enabled" if state else "disabled"
-        return await message.reply_text(f"Global follow-up is now {state_text}. (Manually disabled users remain off.)")
-
-    elif cmd == "status":
-        if len(args) >= 3:
-            try:
-                user_id = int(args[2])
-            except ValueError:
-                return await message.reply_text("Invalid user ID.")
-            last_time = get_last_message(user_id)
-            custom_msg = get_custom_followup_message(user_id)
-            diff = int(time.time()) - last_time
-            return await message.reply_text(
-                f"User {user_id} last messaged {diff} seconds ago.\nFollow-up message: {custom_msg}"
-            )
+    elif command == "status":
+        disabled_users = db.get("core.follow_up", "disabled_users", default=[])
+        if user_id in disabled_users:
+            await message.reply("Follow-up messages are currently disabled for you.")
         else:
-            global_state = get_global_followup()
-            enabled = get_enabled_users()
-            disabled = get_disabled_users()
-            status_text = (
-                f"**Global Follow-Up:** {'Enabled' if global_state else 'Disabled'}\n"
-                f"**Enabled Users:** {', '.join(str(uid) for uid in enabled) if enabled else 'None'}\n"
-                f"**Manually Disabled Users:** {', '.join(str(uid) for uid in disabled) if disabled else 'None'}"
-            )
-            return await message.reply_text(status_text)
-    else:
-        return await message.reply_text("Invalid command. Use .fp help for usage.")
+            await message.reply("Follow-up messages are currently enabled for you.")
 
-# ---------------------------
-# Function to start the background follow-up checker.
-async def start_followup_task(client: Client):
-    asyncio.create_task(followup_checker(client))
-
-# ---------------------------
-# Optional: Module help command to integrate into your main help menu.
-@Client.on_message(filters.command("help", prefixes=[".", "/"]) & filters.me)
-async def module_help(client: Client, message: Message):
-    args = message.text.split()
-    if len(args) >= 3 and args[1].lower() == "fp":
-        await message.reply_text(
-            "**Follow-Up Module Help**\n\n"
-            ".fp on <user_id> [<custom message>] - Enable follow-up for a user.\n"
-            ".fp off <user_id> - Disable follow-up for a user.\n"
-            ".fp all - Toggle global follow-up for all users (except manually disabled ones).\n"
-            ".fp status [<user_id>] - Show follow-up status.\n"
-            ".fp help - Show this help message."
+    elif command == "help":
+        help_text = (
+            "<b>Follow-Up Module Help:</b>\n"
+            "/fp on [<custom message>] - Enable follow-up for yourself with an optional custom message.\n"
+            "/fp off - Disable follow-up for yourself.\n"
+            "/fp all - Toggle global follow-up for all users.\n"
+            "/fp status - Check your follow-up status.\n"
+            "/fp help - Show this help message."
         )
+        await message.reply(help_text)
+
+# Start the background task for checking inactive users
+async def main(client: Client):
+    await check_inactive_users()
+
+# Register the main function to run when the bot starts
+@Client.on_startup
+async def on_startup(client: Client):
+    asyncio.create_task(main(client))
