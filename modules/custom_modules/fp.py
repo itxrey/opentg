@@ -18,7 +18,7 @@ MODULE = "core.followup"
 DEFAULT_MESSAGE = "Hi! You haven't sent a message in a while. Hope you're doing well!"
 
 # For testing, you can change this to 60 (seconds) instead of 86400 (24 hours)
-FOLLOWUP_INTERVAL = 86400
+FOLLOWUP_INTERVAL = 60
 
 # Utility functions to get/set follow-up settings in the DB
 def get_enabled_users():
@@ -114,7 +114,7 @@ async def followup_checker(client: Client):
             await asyncio.sleep(3600)  # Check every hour
         except Exception as ex:
             print(f"Error in followup_checker: {ex}")
-            await asyncio.sleep(3600)
+            await asyncio.sleep(60)
 
 # ---------------------------------------------------------------------------
 # Command handlers for follow-up control.
